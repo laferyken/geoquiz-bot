@@ -1,3 +1,4 @@
+import http from 'http';
 import { Telegraf, Markup } from 'telegraf';
 import cron from 'node-cron';
 import fs from 'fs';
@@ -204,6 +205,14 @@ cron.schedule('0 23 * * *', () => {
 }, { timezone: 'Asia/Novokuznetsk' });
 
 bot.launch().then(() => console.log('🤖 Бот успешно запущен!'));
+// Фиктивный веб-сервер для прохождения проверки портов Render
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!');
+}).listen(PORT, () => {
+  console.log(`🌐 Сервер проверки активности слушает порт: ${PORT}`);
+});
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
