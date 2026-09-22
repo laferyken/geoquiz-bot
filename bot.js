@@ -13,23 +13,31 @@ const LEADERBOARD_FILE = './leaderboard.json';
 const awaitingTimeInput = new Set();
 
 // ==========================================
+// НАСТРОЙКА КНОПКИ МЕНЮ СЛЕВА В TELEGRAM
+// ==========================================
+bot.telegram.setMyCommands([
+  { command: 'start', description: '🎮 Главное меню GeoQuiz' },
+  { command: 'play', description: '🧭 Одиночная игра (Классика)' },
+  { command: 'countries', description: '🌍 Режим: Страны мира' },
+  { command: 'remind', description: '⏰ Напоминания и стрик' },
+  { command: 'leaderboard', description: '🏆 Таблица лидеров' },
+  { command: 'help', description: 'ℹ️ Правила и система MMR' }
+]).then(() => {
+  console.log('✅ Кнопка меню с командами успешно настроена в Telegram');
+}).catch((e) => {
+  console.error('Ошибка установки команд меню:', e);
+});
+
+// ==========================================
 // ФУНКЦИИ ХРАНИЛИЩА (REMINDERS & LEADERBOARD)
 // ==========================================
 function loadReminders() {
   if (!fs.existsSync(REMINDERS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf-8'));
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf-8')); } catch { return {}; }
 }
 
 function saveReminders(data) {
-  try {
-    fs.writeFileSync(REMINDERS_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    console.error('Ошибка сохранения reminders:', e);
-  }
+  try { fs.writeFileSync(REMINDERS_FILE, JSON.stringify(data, null, 2)); } catch (e) {}
 }
 
 function loadLeaderboard() {
@@ -37,17 +45,11 @@ function loadLeaderboard() {
   try {
     const data = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf-8'));
     return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 }
 
 function saveLeaderboard(data) {
-  try {
-    fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(data, null, 2));
-  } catch (e) {
-    console.error('Ошибка сохранения leaderboard:', e);
-  }
+  try { fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(data, null, 2)); } catch (e) {}
 }
 
 function getReminderKeyboard() {
@@ -67,17 +69,16 @@ function getReminderKeyboard() {
 }
 
 // ==========================================
-// ТЕЛЕГРАМ БОТ: ОБРАБОТЧИКИ
+// ТЕЛЕГРАМ БОТ: ОБРАБОТЧИКИ КОМАНД
 // ==========================================
 
-// Единый обработчик команды /start
+// 1. /start (Вход + Авторизация из браузера)
 bot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
-  const payload = ctx.payload; // Параметр из ссылки ?start=
+  const payload = ctx.payload;
   const data = loadReminders();
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Novokuznetsk' });
 
-  // Обновляем визит для напоминаний
   data[userId] = {
     ...data[userId],
     userName: ctx.from.first_name || 'Географ',
@@ -85,7 +86,6 @@ bot.start(async (ctx) => {
   };
   saveReminders(data);
 
-  // Получаем аватарку пользователя
   let photoUrl = null;
   try {
     const photos = await ctx.telegram.getUserProfilePhotos(ctx.from.id, 0, 1);
@@ -103,10 +103,8 @@ bot.start(async (ctx) => {
     photo_url: photoUrl
   };
 
-  // Авторизация пользователя из обычного браузера
   if (payload && payload.startsWith('auth_')) {
     const authCode = payload.replace('auth_', '');
-
     try {
       await fetch('https://geo-quiz-three-zeta.vercel.app/api/auth', {
         method: 'POST',
@@ -119,9 +117,7 @@ bot.start(async (ctx) => {
         `Вернитесь во вкладку браузера — вход выполнится автоматически.`,
         {
           parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.webApp('🎮 Открыть GeoQuiz', WEB_APP_URL)]
-          ])
+          ...Markup.inlineKeyboard([[Markup.button.webApp('🎮 Открыть GeoQuiz', WEB_APP_URL)]])
         }
       );
     } catch (e) {
@@ -129,15 +125,65 @@ bot.start(async (ctx) => {
     }
   }
 
-  // Обычное приветствие
   ctx.reply(
     `👋 Привет, <b>${ctx.from.first_name || 'Географ'}</b>!\n\n` +
     `Добро пожаловать в <b>GeoQuiz</b>!\n` +
-    `Играй в одиночку или сразись в дуэли 1 на 1 в реальном времени.`,
-    { parse_mode: 'HTML', ...getReminderKeyboard() }
+    `• Угадывай локации и страны на карте мира\n` +
+    `• Сражайся в дуэлях 1v1 в реальном времени\n` +
+    `• Поднимай свой MMR и поднимайся в таблице лидеров!`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.webApp('🌍 Открыть игру', WEB_APP_URL)],
+        [Markup.button.callback('⏰ Настройка напоминаний', 'menu_remind')]
+      ])
+    }
   );
 });
 
+// 2. /play (Быстрый запуск игры)
+bot.command('play', (ctx) => {
+  ctx.reply('🗺️ <b>Готов проверить свои знания географии?</b>', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[Markup.button.webApp('🎮 Играть сейчас', WEB_APP_URL)]])
+  });
+});
+
+// 3. /countries (Режим стран)
+bot.command('countries', (ctx) => {
+  ctx.reply('🌍 <b>Режим «Страны мира»:</b>\nУгадывай точное расположение стран на карте!', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[Markup.button.webApp('🌍 Играть в Страны', WEB_APP_URL)]])
+  });
+});
+
+// 4. /leaderboard (Таблица лидеров)
+bot.command('leaderboard', (ctx) => {
+  ctx.reply('🏆 <b>Таблица лидеров GeoQuiz:</b>\nПосмотри, кто занимает первые места в рейтинге:', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[Markup.button.webApp('🏆 Открыть Топ Игроков', WEB_APP_URL)]])
+  });
+});
+
+// 5. /help (Правила)
+bot.command('help', (ctx) => {
+  ctx.reply(
+    `ℹ️ <b>Правила и система рейтинга GeoQuiz:</b>\n\n` +
+    `🎯 <b>Расчёт очков MMR:</b>\n` +
+    `• До 1200 км от точки: начисляется до <b>+50 MMR</b> (за прямое попадание).\n` +
+    `• Свыше 1200 км: штраф пропорционально промаху, максимум <b>-40 MMR</b>.\n\n` +
+    `⚔️ <b>Дуэли 1 на 1:</b>\n` +
+    `• Победа в 5 раундах: <b>+50 MMR</b>\n` +
+    `• Поражение: <b>-40 MMR</b>\n\n` +
+    `🔥 <b>Стрик:</b> заходи каждый день, чтобы огонёк не угас!`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.webApp('🎮 В бой!', WEB_APP_URL)]])
+    }
+  );
+});
+
+// 6. Напоминания
 bot.command(['remind', 'time', 'settime'], (ctx) => {
   ctx.reply('⚙️ <b>Настройка ежедневных напоминаний:</b>', {
     parse_mode: 'HTML',
@@ -209,7 +255,7 @@ bot.on('text', (ctx, next) => {
   });
 });
 
-// Крон ежеминутной проверки напоминаний
+// Крон напоминаний
 cron.schedule('* * * * *', () => {
   const now = new Date();
   const timeString = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Novokuznetsk' });
@@ -239,80 +285,18 @@ cron.schedule('0 23 * * *', () => {
 }, { timezone: 'Asia/Novokuznetsk' });
 
 // ==========================================
-// HTTP-СЕРВЕР: ДЛЯ RENDER И ЛИДЕРБОРДА
+// HTTP-СЕРВЕР ДЛЯ RENDER
 // ==========================================
 const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(200);
-    return res.end();
-  }
-
-  // 1. Получение списка лидеров (GET /api/leaderboard)
-  if (req.method === 'GET' && (req.url === '/api/leaderboard' || req.url === '/leaderboard')) {
-    const users = loadLeaderboard();
-    const sorted = users.sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ success: true, leaderboard: sorted }));
-  }
-
-  // 2. Сохранение реального игрока (POST /api/leaderboard)
-  if (req.method === 'POST' && (req.url === '/api/leaderboard' || req.url === '/leaderboard')) {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body);
-        if (!data.id) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ error: 'Missing ID' }));
-        }
-
-        let users = loadLeaderboard();
-        const existingIndex = users.findIndex((u) => String(u.id) === String(data.id));
-
-        const userProfile = {
-          id: String(data.id),
-          name: data.first_name || data.name || 'Географ',
-          username: data.username || '',
-          photo: data.photo_url || data.photo || null,
-          mmr: Number(data.mmr) || 1000,
-          streak: Number(data.streak) || 0,
-          updatedAt: Date.now()
-        };
-
-        if (existingIndex >= 0) {
-          users[existingIndex] = { ...users[existingIndex], ...userProfile };
-        } else {
-          users.push(userProfile);
-        }
-
-        saveLeaderboard(users);
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ success: true, user: userProfile }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  // Пинг активности для проверок Render
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot and Leaderboard API is running 24/7!');
+  res.end('GeoQuiz Bot & Commands are running!');
 });
 
 server.listen(PORT, () => {
-  console.log(`🌐 Сервер бота и лидерборда слушает порт: ${PORT}`);
+  console.log(`🌐 Сервер бота слушает порт: ${PORT}`);
 });
 
-// Запуск бота с автоматическим сбросом зависших обновлений
 bot.launch({ dropPendingUpdates: true })
   .then(() => console.log('🤖 Бот успешно запущен и слушает Telegram!'))
   .catch((err) => console.error('❌ Ошибка запуска бота:', err));

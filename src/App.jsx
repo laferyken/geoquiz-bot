@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LOCATIONS, getDistanceKm, getRankBadge, checkAndUpdateStreak } from './data';
+import { COUNTRIES } from './countries';
 import MapComponent from './MapComponent';
 
 const BOT_USERNAME = 'GeographySudokamo_bot';
 const CLOUD_DB_TOPIC = 'https://ntfy.sh/geoquiz_global_cloud_v3';
 
-// Безопасный парсер MMR — предотвращает сброс в 0 или NaN
 const getSafeMmr = (val) => {
   const num = Number(val);
   return (!isNaN(num) && num > 0) ? Math.round(num) : 1000;
 };
 
-// Безопасный парсер стрика
 const getSafeStreak = (val) => {
   const num = Number(val);
   return (!isNaN(num) && num >= 0) ? Math.round(num) : 0;
@@ -19,6 +18,7 @@ const getSafeStreak = (val) => {
 
 export default function App() {
   const [screen, setScreen] = useState('menu');
+  const [gameMode, setGameMode] = useState('classic'); // 'classic' | 'countries'
 
   const [roundNumber, setRoundNumber] = useState(1);
   const [playerCoords, setPlayerCoords] = useState(null);
@@ -27,7 +27,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [duelRoundResults, setDuelRoundResults] = useState(null);
 
-  // Стрик и MMR со строгой валидацией
+  // Стрик и MMR
   const [streak, setStreak] = useState(() => getSafeStreak(localStorage.getItem('geo_streak')));
   const [showStreakModal, setShowStreakModal] = useState(false);
   const [newRankUnlocked, setNewRankUnlocked] = useState(null);
@@ -43,7 +43,7 @@ export default function App() {
     }
   });
 
-  // Локальный ID гостя (для тех, кто еще не вошел через TG)
+  // Локальный ID гостя
   const [guestId] = useState(() => {
     let gid = localStorage.getItem('geo_guest_id');
     if (!gid) {
@@ -53,7 +53,6 @@ export default function App() {
     return gid;
   });
 
-  // Сессионный код входа через браузер
   const [authCode] = useState(() => Math.random().toString(36).substring(2, 10));
   const [isWaitingAuth, setIsWaitingAuth] = useState(false);
 
@@ -80,7 +79,10 @@ export default function App() {
   const roundGuessesRef = useRef({});
 
   const [soloIndex, setSoloIndex] = useState(0);
-  const currentQuestion = screen.startsWith('duel') ? duelQuestions[roundNumber - 1] : LOCATIONS[soloIndex];
+
+  // Выбор колоды: страны или классика
+  const activeDeck = gameMode === 'countries' ? COUNTRIES : LOCATIONS;
+  const currentQuestion = screen.startsWith('duel') ? duelQuestions[roundNumber - 1] : activeDeck[soloIndex % activeDeck.length];
   const rank = getRankBadge(mmr);
   const displayName = user?.first_name || 'Географ';
 
@@ -88,7 +90,6 @@ export default function App() {
   useEffect(() => { isAnsweredRef.current = isAnswered; }, [isAnswered]);
   useEffect(() => { duelResultsRef.current = duelRoundResults; }, [duelRoundResults]);
 
-  // Запись в localStorage при изменении с валидацией
   useEffect(() => {
     localStorage.setItem('geo_mmr', String(mmr));
   }, [mmr]);
@@ -97,11 +98,7 @@ export default function App() {
     localStorage.setItem('geo_streak', String(streak));
   }, [streak]);
 
-  // ==========================================
-  // ОБЛАЧНАЯ СИНХРОНИЗАЦИЯ И ЛИДЕРБОРД
-  // ==========================================
-
-  // Получение всех сохраненных игроков из облака
+  // Чтение игроков из облака
   const fetchAllCloudUsers = async () => {
     try {
       const res = await fetch(`${CLOUD_DB_TOPIC}/json?poll=1`);
@@ -128,7 +125,7 @@ export default function App() {
     }
   };
 
-  // Сохранение игрока в облако
+  // Сохранение в облако
   const saveUserToCloud = async (currentMmr, currentStreak, customUser = null) => {
     const activeUser = customUser || user;
     const activeId = activeUser?.id ? String(activeUser.id) : guestId;
@@ -151,11 +148,11 @@ export default function App() {
         body: JSON.stringify(payload)
       });
     } catch (e) {
-      console.error('Ошибка записи в облако:', e);
+      console.error('Ошибка облака:', e);
     }
   };
 
-  // Восстановление аккаунта из облака при входе в браузере
+  // Восстановление аккаунта
   const syncAccountFromCloud = async (targetUser) => {
     if (!targetUser?.id) return;
     try {
@@ -166,21 +163,16 @@ export default function App() {
         const cloudMmr = getSafeMmr(existing.mmr);
         const cloudStreak = getSafeStreak(existing.streak);
 
-        // Восстанавливаем сохраненный рейтинг аккаунта
         setMmr(cloudMmr);
         setStreak(cloudStreak);
         localStorage.setItem('geo_mmr', String(cloudMmr));
         localStorage.setItem('geo_streak', String(cloudStreak));
       } else {
-        // Новый игрок — сохраняем текущие очки в облако
         saveUserToCloud(mmr, streak, targetUser);
       }
-    } catch (err) {
-      console.error('Ошибка восстановления аккаунта:', err);
-    }
+    } catch (err) {}
   };
 
-  // 1. Инициализация Telegram WebApp
   useEffect(() => {
     if (window.Telegram?.WebApp) {
       const tg = window.Telegram.WebApp;
@@ -198,7 +190,6 @@ export default function App() {
       }
     }
 
-    // Авторизация через виджет
     window.onTelegramAuth = (authUser) => {
       setUser(authUser);
       localStorage.setItem('geo_tg_user', JSON.stringify(authUser));
@@ -206,7 +197,6 @@ export default function App() {
     };
   }, []);
 
-  // 2. Слушатель входа через бота по ссылке из браузера
   useEffect(() => {
     let interval;
     if (!user && screen === 'menu') {
@@ -227,30 +217,25 @@ export default function App() {
     return () => clearInterval(interval);
   }, [user, screen, authCode]);
 
-  // Загрузка таблицы лидеров
   const fetchLeaderboard = async () => {
     setIsLoadingLeaderboard(true);
     setScreen('leaderboard');
-
-    // Сохраняем текущее состояние перед просмотром
     await saveUserToCloud(mmr, streak);
 
     try {
       const users = await fetchAllCloudUsers();
-      // Сортировка по MMR от большего к меньшему
       const sorted = users
         .filter((u) => u && u.id)
         .sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
 
       setLeaderboard(sorted);
     } catch (e) {
-      console.error(e);
     } finally {
       setIsLoadingLeaderboard(false);
     }
   };
 
-  // Таймер предпросмотра
+  // Таймеры
   useEffect(() => {
     let timer;
     if (screen === 'duel_preview') {
@@ -269,7 +254,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, [screen, roundNumber]);
 
-  // Таймер раунда карты (20 сек)
   useEffect(() => {
     let timer;
     if (screen === 'duel_map' && !duelRoundResults) {
@@ -327,10 +311,12 @@ export default function App() {
     setScreen('menu');
   };
 
-  // --- СОЛО РЕЖИМ (ПОРОГ 1200 КМ: +50 / -40) ---
-  const startSolo = () => {
+  // ЗАПУСК ИГРЫ: КЛАССИКА ИЛИ СТРАНЫ
+  const startSolo = (mode = 'classic') => {
+    setGameMode(mode);
     setRoundNumber(1);
-    setSoloIndex(Math.floor(Math.random() * LOCATIONS.length));
+    const deck = mode === 'countries' ? COUNTRIES : LOCATIONS;
+    setSoloIndex(Math.floor(Math.random() * deck.length));
     setPlayerCoords(null);
     setIsAnswered(false);
     setScreen('solo_question');
@@ -353,14 +339,13 @@ export default function App() {
     }
 
     const oldRank = getRankBadge(mmr);
-    const newMmr = Math.max(100, mmr + delta); // Минимальный порог 100 MMR
+    const newMmr = Math.max(100, mmr + delta);
     const updatedRank = getRankBadge(newMmr);
 
     setResult({ distance, delta });
     setMmr(newMmr);
     setIsAnswered(true);
 
-    // Сохраняем в облако сразу после раунда
     saveUserToCloud(newMmr, updatedStreak);
 
     if (updatedRank.level > oldRank.level) {
@@ -368,7 +353,7 @@ export default function App() {
     }
   };
 
-  // --- ДУЭЛИ (NTFY SSE) ---
+  // Дуэли
   const connectDuelStream = (roomId, isHostRole) => {
     if (eventSourceRef.current) eventSourceRef.current.close();
 
@@ -571,7 +556,11 @@ export default function App() {
             <span style={{ fontSize: '18px' }}>{rank.icon}</span>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span style={{ fontSize: '10px', color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {screen.startsWith('duel') ? `ДУЭЛЬ: РАУНД ${roundNumber}/5` : screen === 'leaderboard' ? 'ТАБЛИЦА ЛИДЕРОВ' : `РАУНД ${roundNumber}`}
+                {screen.startsWith('duel')
+                  ? `ДУЭЛЬ: РАУНД ${roundNumber}/5`
+                  : screen === 'leaderboard'
+                  ? 'ТАБЛИЦА ЛИДЕРОВ'
+                  : `РАУНД ${roundNumber} • ${gameMode === 'countries' ? 'СТРАНЫ' : 'КЛАССИКА'}`}
               </span>
               <span style={{ fontSize: '12px', fontWeight: '700', color: rank.color }}>
                 {rank.title}
@@ -615,7 +604,7 @@ export default function App() {
       {screen === 'menu' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
 
-          {/* Плашка профиля Telegram / Кнопка входа */}
+          {/* Плашка профиля */}
           {user ? (
             <div style={{
               display: 'flex', alignItems: 'center', gap: '10px', background: '#18181b',
@@ -679,7 +668,7 @@ export default function App() {
 
           <div style={{
             display: 'flex', alignItems: 'center', gap: '8px', background: '#18181b',
-            padding: '6px 14px', borderRadius: '20px', border: `1px solid ${rank.color}40`, marginBottom: '32px'
+            padding: '6px 14px', borderRadius: '20px', border: `1px solid ${rank.color}40`, marginBottom: '24px'
           }}>
             <span>{rank.icon}</span>
             <span style={{ fontSize: '13px', fontWeight: '700', color: rank.color }}>{rank.title}</span>
@@ -689,24 +678,39 @@ export default function App() {
             <span style={{ fontSize: '13px', fontWeight: '800', color: '#f97316' }}>🔥 {streak}</span>
           </div>
 
-          <div style={{ width: '100%', maxWidth: '320px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ width: '100%', maxWidth: '320px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            
+            {/* Кнопка 1: Классическая игра */}
             <button
-              onClick={startSolo}
+              onClick={() => startSolo('classic')}
               style={{
-                width: '100%', padding: '16px', borderRadius: '16px', border: 'none',
+                width: '100%', padding: '15px', borderRadius: '16px', border: 'none',
                 background: 'linear-gradient(90deg, #2563eb, #3b82f6)', color: '#ffffff',
-                fontSize: '16px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 8px 24px rgba(37, 99, 235, 0.35)'
+                fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 6px 20px rgba(37, 99, 235, 0.35)'
               }}
             >
-              🧭 Одиночная игра
+              🧭 Одиночная игра (Классика)
             </button>
 
+            {/* Кнопка 2: Новый режим - СТРАНЫ МИРА */}
+            <button
+              onClick={() => startSolo('countries')}
+              style={{
+                width: '100%', padding: '15px', borderRadius: '16px', border: 'none',
+                background: 'linear-gradient(90deg, #059669, #10b981)', color: '#ffffff',
+                fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 6px 20px rgba(16, 185, 129, 0.35)'
+              }}
+            >
+              🌍 Режим «Страны мира»
+            </button>
+
+            {/* Кнопка 3: Дуэль */}
             <button
               onClick={createDuel}
               style={{
-                width: '100%', padding: '16px', borderRadius: '16px', border: '1px solid #ea580c',
+                width: '100%', padding: '15px', borderRadius: '16px', border: '1px solid #ea580c',
                 background: 'linear-gradient(90deg, #c2410c, #ea580c)', color: '#ffffff',
-                fontSize: '16px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 8px 24px rgba(234, 88, 12, 0.35)'
+                fontSize: '15px', fontWeight: '800', cursor: 'pointer', boxShadow: '0 6px 20px rgba(234, 88, 12, 0.35)'
               }}
             >
               ⚔️ Создать дуэль (1 vs 1)
@@ -739,7 +743,7 @@ export default function App() {
             <button
               onClick={fetchLeaderboard}
               style={{
-                marginTop: '6px', width: '100%', padding: '14px', borderRadius: '14px',
+                marginTop: '4px', width: '100%', padding: '14px', borderRadius: '14px',
                 border: '1px solid #fbbf2450', background: '#1c1917', color: '#fbbf24',
                 fontSize: '15px', fontWeight: '800', cursor: 'pointer', display: 'flex',
                 alignItems: 'center', justifyContent: 'center', gap: '8px'
@@ -813,7 +817,7 @@ export default function App() {
             );
           })()}
 
-          {/* Список живых игроков */}
+          {/* Список игроков */}
           {isLoadingLeaderboard ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#71717a', fontSize: '14px' }}>
               Загрузка топа игроков...
@@ -926,7 +930,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 4. ПРЕВЬЮ ОБЪЕКТА (3 СЕКУНДЫ) */}
+      {/* 4. ПРЕВЬЮ ДУЭЛИ (3 СЕКУНДЫ) */}
       {screen === 'duel_preview' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
           <span style={{ fontSize: '13px', fontWeight: '700', color: '#f97316', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '12px' }}>
@@ -1037,20 +1041,28 @@ export default function App() {
         </div>
       )}
 
-      {/* 7. ОДИНОЧНЫЙ ВОПРОС */}
+      {/* 7. ЭКРАН ВОПРОСА (ОДИНОЧНЫЙ) */}
       {screen === 'solo_question' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '24px', textAlign: 'center' }}>
-          <div style={{ padding: '6px 14px', borderRadius: '20px', background: '#1e1b4b', color: '#818cf8', fontSize: '12px', fontWeight: '600', marginBottom: '16px' }}>
-            {currentQuestion.category}
+          <div style={{
+            padding: '6px 14px', borderRadius: '20px',
+            background: gameMode === 'countries' ? '#064e3b' : '#1e1b4b',
+            color: gameMode === 'countries' ? '#6ee7b7' : '#818cf8',
+            fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '16px'
+          }}>
+            {gameMode === 'countries' ? '🌍 Страна мира' : currentQuestion.category}
           </div>
-          <h1 style={{ fontSize: '32px', fontWeight: '800', marginBottom: '48px', color: '#ffffff' }}>
+          <h1 style={{ fontSize: '34px', fontWeight: '900', marginBottom: '48px', color: '#ffffff' }}>
             {currentQuestion.name}
           </h1>
           <button
             onClick={() => setScreen('solo_map')}
             style={{
               width: '100%', maxWidth: '320px', padding: '16px', borderRadius: '16px',
-              border: 'none', background: '#3b82f6', color: '#ffffff', fontSize: '17px', fontWeight: '700', cursor: 'pointer'
+              border: 'none',
+              background: gameMode === 'countries' ? 'linear-gradient(90deg, #059669, #10b981)' : '#3b82f6',
+              color: '#ffffff', fontSize: '17px', fontWeight: '700', cursor: 'pointer',
+              boxShadow: gameMode === 'countries' ? '0 8px 24px rgba(16, 185, 129, 0.35)' : '0 8px 24px rgba(59, 130, 246, 0.35)'
             }}
           >
             🗺️ Найти на карте
@@ -1058,7 +1070,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 8. ОДИНОЧНАЯ КАРТА */}
+      {/* 8. КАРТА (ОДИНОЧНАЯ) */}
       {screen === 'solo_map' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
           <main style={{ flex: 1 }}>
@@ -1071,7 +1083,7 @@ export default function App() {
           </main>
           <footer style={{ padding: '14px 16px', background: '#121215', borderTop: '1px solid #27272a', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div style={{ textAlign: 'center', fontSize: '13px', color: '#a1a1aa' }}>
-              Ищем: <span style={{ color: '#60a5fa', fontWeight: '600' }}>{currentQuestion.name}</span>
+              Ищем: <span style={{ color: gameMode === 'countries' ? '#34d399' : '#60a5fa', fontWeight: '700' }}>{currentQuestion.name}</span>
             </div>
 
             {!isAnswered ? (
@@ -1080,7 +1092,8 @@ export default function App() {
                 disabled={!playerCoords}
                 style={{
                   width: '100%', padding: '14px', borderRadius: '14px', border: 'none',
-                  backgroundColor: playerCoords ? '#3b82f6' : '#27272a', color: playerCoords ? '#ffffff' : '#71717a',
+                  backgroundColor: playerCoords ? (gameMode === 'countries' ? '#10b981' : '#3b82f6') : '#27272a',
+                  color: playerCoords ? '#ffffff' : '#71717a',
                   fontSize: '15px', fontWeight: '600', cursor: playerCoords ? 'pointer' : 'not-allowed',
                 }}
               >
@@ -1099,7 +1112,7 @@ export default function App() {
                     setPlayerCoords(null);
                     setIsAnswered(false);
                     setResult(null);
-                    setSoloIndex((prev) => (prev + 1) % LOCATIONS.length);
+                    setSoloIndex((prev) => (prev + 1) % activeDeck.length);
                     setRoundNumber((prev) => prev + 1);
                     setScreen('solo_question');
                   }}
