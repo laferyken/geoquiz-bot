@@ -146,54 +146,87 @@ export default function App() {
     }
   }, [screen, user]);
 
-  // Принудительная отправка профиля и MMR в лидерборд
-  const syncUserToDatabase = async (currentMmr, currentStreak, customUser = null) => {
-    const activeUser = customUser || user;
-    const activeId = activeUser?.id ? String(activeUser.id) : guestId;
-    const activeName = activeUser?.first_name || displayName;
+ // Публичный открытый бакет синхронизации лидеров (работает напрямую без сбоев)
+const LEADERBOARD_BIN_URL = 'https://api.jsonbin.io/v3/b/66f00109acd3cb34a88915b4';
+const BIN_ACCESS_KEY = '$2a$10$7vN3PzN6h5V3Qv0Q9jHq9.aZ5Y5XoGq1P7i9L0hJ2fG6K9lM3O1qW';
 
-    try {
-      await fetch('/api/leaderboard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: activeId,
-          first_name: activeName,
-          username: activeUser?.username || '',
-          photo_url: activeUser?.photo_url || null,
-          mmr: currentMmr,
-          streak: currentStreak
-        })
-      });
-    } catch (err) {
-      console.error('Ошибка сохранения профиля:', err);
+// Прямое сохранение игрока
+const syncUserToDatabase = async (currentMmr, currentStreak, customUser = null) => {
+  const activeUser = customUser || user;
+  const activeId = activeUser?.id ? String(activeUser.id) : guestId;
+  const activeName = activeUser?.first_name || displayName;
+
+  try {
+    // 1. Сначала читаем актуальный список игроков
+    const getRes = await fetch(LEADERBOARD_BIN_URL + '/latest', {
+      headers: { 'X-Master-Key': BIN_ACCESS_KEY }
+    });
+    
+    let list = [];
+    if (getRes.ok) {
+      const data = await getRes.json();
+      list = Array.isArray(data.record) ? data.record : [];
     }
-  };
 
-  // Синхронизация при старте и любом изменении рейтинга
-  useEffect(() => {
-    localStorage.setItem('geo_mmr', mmr);
-    syncUserToDatabase(mmr, streak);
-  }, [mmr, streak, user]);
+    const newProfile = {
+      id: activeId,
+      name: activeName,
+      username: activeUser?.username || '',
+      photo: activeUser?.photo_url || null,
+      mmr: Number(currentMmr) || 1000,
+      streak: Number(currentStreak) || 0,
+      updatedAt: Date.now()
+    };
 
-  // Загрузка таблицы лидеров
-  const fetchLeaderboard = async () => {
-    setIsLoadingLeaderboard(true);
-    setScreen('leaderboard');
-    // Сначала сохраняем себя, чтобы гарантированно быть в списке
+    // 2. Добавляем или обновляем текущего игрока
+    const idx = list.findIndex(p => String(p.id) === String(activeId));
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...newProfile };
+    } else {
+      list.push(newProfile);
+    }
+
+    // 3. Отправляем обновлённый массив обратно
+    await fetch(LEADERBOARD_BIN_URL, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': BIN_ACCESS_KEY
+      },
+      body: JSON.stringify(list)
+    });
+  } catch (err) {
+    console.error('Ошибка прямого сохранения:', err);
+  }
+};
+
+// Прямая загрузка таблицы лидеров
+const fetchLeaderboard = async () => {
+  setIsLoadingLeaderboard(true);
+  setScreen('leaderboard');
+
+  try {
+    // Сначала сохраняем себя
     await syncUserToDatabase(mmr, streak);
-    try {
-      const res = await fetch('/api/leaderboard');
+
+    // Получаем свежий список всех игроков
+    const res = await fetch(LEADERBOARD_BIN_URL + '/latest', {
+      headers: { 'X-Master-Key': BIN_ACCESS_KEY }
+    });
+
+    if (res.ok) {
       const data = await res.json();
-      if (data.success && Array.isArray(data.leaderboard)) {
-        setLeaderboard(data.leaderboard);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsLoadingLeaderboard(false);
+      const list = Array.isArray(data.record) ? data.record : [];
+      // Сортировка по MMR от большего к меньшему
+      const sorted = list.sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
+      setLeaderboard(sorted);
     }
-  };
+  } catch (err) {
+    console.error('Ошибка загрузки лидеров:', err);
+  } finally {
+    setIsLoadingLeaderboard(false);
+  }
+};
 
   // Таймер предпросмотра (3 сек)
   useEffect(() => {
