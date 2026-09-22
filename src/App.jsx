@@ -3,6 +3,19 @@ import { LOCATIONS, getDistanceKm, getRankBadge, checkAndUpdateStreak } from './
 import MapComponent from './MapComponent';
 
 const BOT_USERNAME = 'GeographySudokamo_bot';
+const CLOUD_DB_TOPIC = 'https://ntfy.sh/geoquiz_global_cloud_v3';
+
+// Безопасный парсер MMR — предотвращает сброс в 0 или NaN
+const getSafeMmr = (val) => {
+  const num = Number(val);
+  return (!isNaN(num) && num > 0) ? Math.round(num) : 1000;
+};
+
+// Безопасный парсер стрика
+const getSafeStreak = (val) => {
+  const num = Number(val);
+  return (!isNaN(num) && num >= 0) ? Math.round(num) : 0;
+};
 
 export default function App() {
   const [screen, setScreen] = useState('menu');
@@ -14,32 +27,33 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [duelRoundResults, setDuelRoundResults] = useState(null);
 
-  // Стрик и MMR
-  const [streak, setStreak] = useState(() => parseInt(localStorage.getItem('geo_streak') || '0', 10));
+  // Стрик и MMR со строгой валидацией
+  const [streak, setStreak] = useState(() => getSafeStreak(localStorage.getItem('geo_streak')));
   const [showStreakModal, setShowStreakModal] = useState(false);
   const [newRankUnlocked, setNewRankUnlocked] = useState(null);
-  const [mmr, setMmr] = useState(() => {
-    const saved = localStorage.getItem('geo_mmr');
-    return saved !== null ? parseInt(saved, 10) : 1000;
-  });
+  const [mmr, setMmr] = useState(() => getSafeMmr(localStorage.getItem('geo_mmr')));
 
-  // Авторизованный профиль
+  // Профиль Telegram
   const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('geo_tg_user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('geo_tg_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
 
-  // Постоянный локальный ID устройства (гарантирует сохранение даже без TG)
+  // Локальный ID гостя (для тех, кто еще не вошел через TG)
   const [guestId] = useState(() => {
     let gid = localStorage.getItem('geo_guest_id');
     if (!gid) {
-      gid = 'id_' + Math.random().toString(36).substring(2, 9);
+      gid = 'guest_' + Math.random().toString(36).substring(2, 9);
       localStorage.setItem('geo_guest_id', gid);
     }
     return gid;
   });
 
-  // Сессионный код для входа через браузер
+  // Сессионный код входа через браузер
   const [authCode] = useState(() => Math.random().toString(36).substring(2, 10));
   const [isWaitingAuth, setIsWaitingAuth] = useState(false);
 
@@ -70,17 +84,101 @@ export default function App() {
   const rank = getRankBadge(mmr);
   const displayName = user?.first_name || 'Географ';
 
+  useEffect(() => { myRoleRef.current = myRole; }, [myRole]);
+  useEffect(() => { isAnsweredRef.current = isAnswered; }, [isAnswered]);
+  useEffect(() => { duelResultsRef.current = duelRoundResults; }, [duelRoundResults]);
+
+  // Запись в localStorage при изменении с валидацией
   useEffect(() => {
-    myRoleRef.current = myRole;
-  }, [myRole]);
+    localStorage.setItem('geo_mmr', String(mmr));
+  }, [mmr]);
 
   useEffect(() => {
-    isAnsweredRef.current = isAnswered;
-  }, [isAnswered]);
+    localStorage.setItem('geo_streak', String(streak));
+  }, [streak]);
 
-  useEffect(() => {
-    duelResultsRef.current = duelRoundResults;
-  }, [duelRoundResults]);
+  // ==========================================
+  // ОБЛАЧНАЯ СИНХРОНИЗАЦИЯ И ЛИДЕРБОРД
+  // ==========================================
+
+  // Получение всех сохраненных игроков из облака
+  const fetchAllCloudUsers = async () => {
+    try {
+      const res = await fetch(`${CLOUD_DB_TOPIC}/json?poll=1`);
+      if (!res.ok) return [];
+      const text = await res.text();
+      const lines = text.trim().split('\n').filter(Boolean);
+      const playersMap = new Map();
+
+      for (const line of lines) {
+        try {
+          const item = JSON.parse(line);
+          if (item.message) {
+            const data = JSON.parse(item.message);
+            if (data && data.id) {
+              playersMap.set(String(data.id), data);
+            }
+          }
+        } catch (e) {}
+      }
+
+      return Array.from(playersMap.values());
+    } catch {
+      return [];
+    }
+  };
+
+  // Сохранение игрока в облако
+  const saveUserToCloud = async (currentMmr, currentStreak, customUser = null) => {
+    const activeUser = customUser || user;
+    const activeId = activeUser?.id ? String(activeUser.id) : guestId;
+    const activeName = activeUser?.first_name || displayName;
+
+    const payload = {
+      id: activeId,
+      name: activeName,
+      username: activeUser?.username || '',
+      photo: activeUser?.photo_url || null,
+      mmr: getSafeMmr(currentMmr),
+      streak: getSafeStreak(currentStreak),
+      updatedAt: Date.now()
+    };
+
+    try {
+      await fetch(CLOUD_DB_TOPIC, {
+        method: 'POST',
+        headers: { 'Cache': 'yes', 'Title': 'player_sync' },
+        body: JSON.stringify(payload)
+      });
+    } catch (e) {
+      console.error('Ошибка записи в облако:', e);
+    }
+  };
+
+  // Восстановление аккаунта из облака при входе в браузере
+  const syncAccountFromCloud = async (targetUser) => {
+    if (!targetUser?.id) return;
+    try {
+      const allUsers = await fetchAllCloudUsers();
+      const existing = allUsers.find((p) => String(p.id) === String(targetUser.id));
+
+      if (existing && existing.mmr) {
+        const cloudMmr = getSafeMmr(existing.mmr);
+        const cloudStreak = getSafeStreak(existing.streak);
+
+        // Восстанавливаем сохраненный рейтинг аккаунта
+        setMmr(cloudMmr);
+        setStreak(cloudStreak);
+        localStorage.setItem('geo_mmr', String(cloudMmr));
+        localStorage.setItem('geo_streak', String(cloudStreak));
+      } else {
+        // Новый игрок — сохраняем текущие очки в облако
+        saveUserToCloud(mmr, streak, targetUser);
+      }
+    } catch (err) {
+      console.error('Ошибка восстановления аккаунта:', err);
+    }
+  };
 
   // 1. Инициализация Telegram WebApp
   useEffect(() => {
@@ -96,18 +194,19 @@ export default function App() {
         const tgUser = tg.initDataUnsafe.user;
         setUser(tgUser);
         localStorage.setItem('geo_tg_user', JSON.stringify(tgUser));
+        syncAccountFromCloud(tgUser);
       }
     }
 
-    // Обработчик Telegram Login Widget
+    // Авторизация через виджет
     window.onTelegramAuth = (authUser) => {
       setUser(authUser);
       localStorage.setItem('geo_tg_user', JSON.stringify(authUser));
-      syncUserToDatabase(mmr, streak, authUser);
+      syncAccountFromCloud(authUser);
     };
   }, []);
 
-  // 2. Слушатель авторизации через бота по клику из браузера
+  // 2. Слушатель входа через бота по ссылке из браузера
   useEffect(() => {
     let interval;
     if (!user && screen === 'menu') {
@@ -119,116 +218,39 @@ export default function App() {
             setUser(data.user);
             localStorage.setItem('geo_tg_user', JSON.stringify(data.user));
             setIsWaitingAuth(false);
-            syncUserToDatabase(mmr, streak, data.user);
+            syncAccountFromCloud(data.user);
             clearInterval(interval);
           }
         } catch (e) {}
       }, 2000);
     }
     return () => clearInterval(interval);
-  }, [user, screen, authCode, mmr, streak]);
+  }, [user, screen, authCode]);
 
-  // 3. Монтирование Telegram Login Widget
-  useEffect(() => {
-    if (screen === 'menu' && !user) {
-      const container = document.getElementById('telegram-login-container');
-      if (container && !container.hasChildNodes()) {
-        const script = document.createElement('script');
-        script.src = 'https://telegram.org/js/telegram-widget.js?22';
-        script.setAttribute('data-telegram-login', BOT_USERNAME);
-        script.setAttribute('data-size', 'large');
-        script.setAttribute('data-radius', '14');
-        script.setAttribute('data-onauth', 'onTelegramAuth(user)');
-        script.setAttribute('data-request-access', 'write');
-        script.async = true;
-        container.appendChild(script);
-      }
-    }
-  }, [screen, user]);
+  // Загрузка таблицы лидеров
+  const fetchLeaderboard = async () => {
+    setIsLoadingLeaderboard(true);
+    setScreen('leaderboard');
 
- // Публичный открытый бакет синхронизации лидеров (работает напрямую без сбоев)
-const LEADERBOARD_BIN_URL = 'https://api.jsonbin.io/v3/b/66f00109acd3cb34a88915b4';
-const BIN_ACCESS_KEY = '$2a$10$7vN3PzN6h5V3Qv0Q9jHq9.aZ5Y5XoGq1P7i9L0hJ2fG6K9lM3O1qW';
+    // Сохраняем текущее состояние перед просмотром
+    await saveUserToCloud(mmr, streak);
 
-// Прямое сохранение игрока
-const syncUserToDatabase = async (currentMmr, currentStreak, customUser = null) => {
-  const activeUser = customUser || user;
-  const activeId = activeUser?.id ? String(activeUser.id) : guestId;
-  const activeName = activeUser?.first_name || displayName;
-
-  try {
-    // 1. Сначала читаем актуальный список игроков
-    const getRes = await fetch(LEADERBOARD_BIN_URL + '/latest', {
-      headers: { 'X-Master-Key': BIN_ACCESS_KEY }
-    });
-    
-    let list = [];
-    if (getRes.ok) {
-      const data = await getRes.json();
-      list = Array.isArray(data.record) ? data.record : [];
-    }
-
-    const newProfile = {
-      id: activeId,
-      name: activeName,
-      username: activeUser?.username || '',
-      photo: activeUser?.photo_url || null,
-      mmr: Number(currentMmr) || 1000,
-      streak: Number(currentStreak) || 0,
-      updatedAt: Date.now()
-    };
-
-    // 2. Добавляем или обновляем текущего игрока
-    const idx = list.findIndex(p => String(p.id) === String(activeId));
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...newProfile };
-    } else {
-      list.push(newProfile);
-    }
-
-    // 3. Отправляем обновлённый массив обратно
-    await fetch(LEADERBOARD_BIN_URL, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Master-Key': BIN_ACCESS_KEY
-      },
-      body: JSON.stringify(list)
-    });
-  } catch (err) {
-    console.error('Ошибка прямого сохранения:', err);
-  }
-};
-
-// Прямая загрузка таблицы лидеров
-const fetchLeaderboard = async () => {
-  setIsLoadingLeaderboard(true);
-  setScreen('leaderboard');
-
-  try {
-    // Сначала сохраняем себя
-    await syncUserToDatabase(mmr, streak);
-
-    // Получаем свежий список всех игроков
-    const res = await fetch(LEADERBOARD_BIN_URL + '/latest', {
-      headers: { 'X-Master-Key': BIN_ACCESS_KEY }
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const list = Array.isArray(data.record) ? data.record : [];
+    try {
+      const users = await fetchAllCloudUsers();
       // Сортировка по MMR от большего к меньшему
-      const sorted = list.sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
-      setLeaderboard(sorted);
-    }
-  } catch (err) {
-    console.error('Ошибка загрузки лидеров:', err);
-  } finally {
-    setIsLoadingLeaderboard(false);
-  }
-};
+      const sorted = users
+        .filter((u) => u && u.id)
+        .sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
 
-  // Таймер предпросмотра (3 сек)
+      setLeaderboard(sorted);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsLoadingLeaderboard(false);
+    }
+  };
+
+  // Таймер предпросмотра
   useEffect(() => {
     let timer;
     if (screen === 'duel_preview') {
@@ -247,7 +269,7 @@ const fetchLeaderboard = async () => {
     return () => clearInterval(timer);
   }, [screen, roundNumber]);
 
-  // Таймер раунда дуэли (20 сек)
+  // Таймер раунда карты (20 сек)
   useEffect(() => {
     let timer;
     if (screen === 'duel_map' && !duelRoundResults) {
@@ -256,9 +278,7 @@ const fetchLeaderboard = async () => {
         setMapTimer((prev) => {
           if (prev <= 1) {
             clearInterval(timer);
-            if (!isAnsweredRef.current) {
-              handleDuelTimeExpired();
-            }
+            if (!isAnsweredRef.current) handleDuelTimeExpired();
             return 0;
           }
           return prev - 1;
@@ -274,9 +294,7 @@ const fetchLeaderboard = async () => {
         method: 'POST',
         body: JSON.stringify(data)
       });
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) {}
   };
 
   const handleCopyCode = async () => {
@@ -293,13 +311,8 @@ const fetchLeaderboard = async () => {
         document.body.removeChild(ta);
       }
       setCopied(true);
-      if (window.Telegram?.WebApp?.HapticFeedback) {
-        window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-      }
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) {}
   };
 
   const handleGoToMenu = () => {
@@ -314,7 +327,7 @@ const fetchLeaderboard = async () => {
     setScreen('menu');
   };
 
-  // --- СОЛО РЕЖИМ (НОВАЯ ЭКОНОМИКА РЕЙТИНГА) ---
+  // --- СОЛО РЕЖИМ (ПОРОГ 1200 КМ: +50 / -40) ---
   const startSolo = () => {
     setRoundNumber(1);
     setSoloIndex(Math.floor(Math.random() * LOCATIONS.length));
@@ -331,7 +344,6 @@ const fetchLeaderboard = async () => {
 
     const distance = getDistanceKm(playerCoords[0], playerCoords[1], currentQuestion.coords[0], currentQuestion.coords[1]);
 
-    // Порог: 1200 км. До 1200 км: до +50 MMR. Свыше 1200 км: штраф до -40 MMR.
     let delta = 0;
     if (distance <= 1200) {
       delta = Math.round(50 * (1 - distance / 1200));
@@ -341,12 +353,15 @@ const fetchLeaderboard = async () => {
     }
 
     const oldRank = getRankBadge(mmr);
-    const newMmr = Math.max(0, mmr + delta);
+    const newMmr = Math.max(100, mmr + delta); // Минимальный порог 100 MMR
     const updatedRank = getRankBadge(newMmr);
 
     setResult({ distance, delta });
     setMmr(newMmr);
     setIsAnswered(true);
+
+    // Сохраняем в облако сразу после раунда
+    saveUserToCloud(newMmr, updatedStreak);
 
     if (updatedRank.level > oldRank.level) {
       setTimeout(() => setNewRankUnlocked(updatedRank), 400);
@@ -495,9 +510,10 @@ const fetchLeaderboard = async () => {
 
   const handleNextDuelRound = () => {
     if (roundNumber >= 5) {
-      // Победа: +50 MMR, Поражение: -40 MMR, Ничья: 0
       const delta = duelScores.me > duelScores.opp ? 50 : duelScores.me < duelScores.opp ? -40 : 0;
-      setMmr((prev) => Math.max(0, prev + delta));
+      const newMmr = Math.max(100, mmr + delta);
+      setMmr(newMmr);
+      saveUserToCloud(newMmr, streak);
       setScreen('duel_result');
     } else {
       const nextR = roundNumber + 1;
@@ -599,7 +615,7 @@ const fetchLeaderboard = async () => {
       {screen === 'menu' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
 
-          {/* Плашка профиля Telegram / Виджет входа */}
+          {/* Плашка профиля Telegram / Кнопка входа */}
           {user ? (
             <div style={{
               display: 'flex', alignItems: 'center', gap: '10px', background: '#18181b',
@@ -628,8 +644,6 @@ const fetchLeaderboard = async () => {
             </div>
           ) : (
             <div style={{ marginBottom: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-              <div id="telegram-login-container"></div>
-
               <a
                 href={`https://t.me/${BOT_USERNAME}?start=auth_${authCode}`}
                 target="_blank"
@@ -638,7 +652,7 @@ const fetchLeaderboard = async () => {
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '8px',
                   background: isWaitingAuth ? '#0369a1' : 'linear-gradient(90deg, #0284c7, #38bdf8)',
-                  color: '#ffffff', padding: '10px 18px', borderRadius: '16px', textDecoration: 'none',
+                  color: '#ffffff', padding: '12px 20px', borderRadius: '16px', textDecoration: 'none',
                   fontSize: '13px', fontWeight: '800', boxShadow: '0 4px 14px rgba(2, 132, 199, 0.35)'
                 }}
               >
@@ -646,7 +660,7 @@ const fetchLeaderboard = async () => {
                 {isWaitingAuth ? 'Ожидание нажатия Start в боте...' : `Войти через @${BOT_USERNAME}`}
               </a>
               <span style={{ fontSize: '11px', color: '#71717a' }}>
-                Нажмите на кнопку и нажмите <b>Запустить (Start)</b> в боте
+                Нажмите для синхронизации вашего рейтинга
               </span>
             </div>
           )}
@@ -737,7 +751,7 @@ const fetchLeaderboard = async () => {
         </div>
       )}
 
-      {/* 2. ЛИДЕРБОРД РЕАЛЬНЫХ ИГРОКОВ */}
+      {/* 2. ТАБЛИЦА ЛИДЕРОВ */}
       {screen === 'leaderboard' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '16px', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -755,7 +769,7 @@ const fetchLeaderboard = async () => {
             </button>
           </div>
 
-          {/* Плашка текущего пользователя */}
+          {/* Плашка текущего игрока */}
           {(() => {
             const currentActiveId = user?.id ? String(user.id) : guestId;
             const myIndex = leaderboard.findIndex((p) => String(p.id) === currentActiveId);
@@ -799,7 +813,7 @@ const fetchLeaderboard = async () => {
             );
           })()}
 
-          {/* Список реальных игроков */}
+          {/* Список живых игроков */}
           {isLoadingLeaderboard ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#71717a', fontSize: '14px' }}>
               Загрузка топа игроков...
