@@ -29,6 +29,16 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
+  // Постоянный локальный ID устройства (гарантирует сохранение даже без TG)
+  const [guestId] = useState(() => {
+    let gid = localStorage.getItem('geo_guest_id');
+    if (!gid) {
+      gid = 'id_' + Math.random().toString(36).substring(2, 9);
+      localStorage.setItem('geo_guest_id', gid);
+    }
+    return gid;
+  });
+
   // Сессионный код для входа через браузер
   const [authCode] = useState(() => Math.random().toString(36).substring(2, 10));
   const [isWaitingAuth, setIsWaitingAuth] = useState(false);
@@ -89,11 +99,11 @@ export default function App() {
       }
     }
 
-    // Обработчик Telegram Widget
+    // Обработчик Telegram Login Widget
     window.onTelegramAuth = (authUser) => {
       setUser(authUser);
       localStorage.setItem('geo_tg_user', JSON.stringify(authUser));
-      syncUserToDatabase(authUser, mmr, streak);
+      syncUserToDatabase(mmr, streak, authUser);
     };
   }, []);
 
@@ -109,7 +119,7 @@ export default function App() {
             setUser(data.user);
             localStorage.setItem('geo_tg_user', JSON.stringify(data.user));
             setIsWaitingAuth(false);
-            syncUserToDatabase(data.user, mmr, streak);
+            syncUserToDatabase(mmr, streak, data.user);
             clearInterval(interval);
           }
         } catch (e) {}
@@ -136,17 +146,21 @@ export default function App() {
     }
   }, [screen, user]);
 
-  const syncUserToDatabase = async (userData, currentMmr, currentStreak) => {
-    if (!userData?.id) return;
+  // Принудительная отправка профиля и MMR в лидерборд
+  const syncUserToDatabase = async (currentMmr, currentStreak, customUser = null) => {
+    const activeUser = customUser || user;
+    const activeId = activeUser?.id ? String(activeUser.id) : guestId;
+    const activeName = activeUser?.first_name || displayName;
+
     try {
       await fetch('/api/leaderboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: userData.id,
-          first_name: userData.first_name,
-          username: userData.username,
-          photo_url: userData.photo_url,
+          id: activeId,
+          first_name: activeName,
+          username: activeUser?.username || '',
+          photo_url: activeUser?.photo_url || null,
           mmr: currentMmr,
           streak: currentStreak
         })
@@ -156,21 +170,23 @@ export default function App() {
     }
   };
 
+  // Синхронизация при старте и любом изменении рейтинга
   useEffect(() => {
     localStorage.setItem('geo_mmr', mmr);
-    if (user) {
-      syncUserToDatabase(user, mmr, streak);
-    }
+    syncUserToDatabase(mmr, streak);
   }, [mmr, streak, user]);
 
+  // Загрузка таблицы лидеров
   const fetchLeaderboard = async () => {
     setIsLoadingLeaderboard(true);
     setScreen('leaderboard');
+    // Сначала сохраняем себя, чтобы гарантированно быть в списке
+    await syncUserToDatabase(mmr, streak);
     try {
       const res = await fetch('/api/leaderboard');
       const data = await res.json();
-      if (data.success) {
-        setLeaderboard(data.leaderboard || []);
+      if (data.success && Array.isArray(data.leaderboard)) {
+        setLeaderboard(data.leaderboard);
       }
     } catch (err) {
       console.error(err);
@@ -265,7 +281,7 @@ export default function App() {
     setScreen('menu');
   };
 
-  // --- СОЛО РЕЖИМ ---
+  // --- СОЛО РЕЖИМ (НОВАЯ ЭКОНОМИКА РЕЙТИНГА) ---
   const startSolo = () => {
     setRoundNumber(1);
     setSoloIndex(Math.floor(Math.random() * LOCATIONS.length));
@@ -281,7 +297,16 @@ export default function App() {
     if (isNewDay) setShowStreakModal(true);
 
     const distance = getDistanceKm(playerCoords[0], playerCoords[1], currentQuestion.coords[0], currentQuestion.coords[1]);
-    const delta = distance <= 900 ? Math.round(200 * (1 - distance / 900)) : -Math.min(200, Math.round(((distance - 900) / 2100) * 200));
+
+    // Порог: 1200 км. До 1200 км: до +50 MMR. Свыше 1200 км: штраф до -40 MMR.
+    let delta = 0;
+    if (distance <= 1200) {
+      delta = Math.round(50 * (1 - distance / 1200));
+    } else {
+      const penalty = Math.round(((distance - 1200) / 1800) * 40);
+      delta = -Math.min(40, Math.max(1, penalty));
+    }
+
     const oldRank = getRankBadge(mmr);
     const newMmr = Math.max(0, mmr + delta);
     const updatedRank = getRankBadge(newMmr);
@@ -437,7 +462,8 @@ export default function App() {
 
   const handleNextDuelRound = () => {
     if (roundNumber >= 5) {
-      const delta = duelScores.me > duelScores.opp ? 100 : duelScores.me < duelScores.opp ? -100 : 0;
+      // Победа: +50 MMR, Поражение: -40 MMR, Ничья: 0
+      const delta = duelScores.me > duelScores.opp ? 50 : duelScores.me < duelScores.opp ? -40 : 0;
       setMmr((prev) => Math.max(0, prev + delta));
       setScreen('duel_result');
     } else {
@@ -540,7 +566,7 @@ export default function App() {
       {screen === 'menu' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
 
-          {/* Плашка профиля Telegram или блок входа */}
+          {/* Плашка профиля Telegram / Виджет входа */}
           {user ? (
             <div style={{
               display: 'flex', alignItems: 'center', gap: '10px', background: '#18181b',
@@ -571,7 +597,6 @@ export default function App() {
             <div style={{ marginBottom: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
               <div id="telegram-login-container"></div>
 
-              {/* Прямая кнопка входа через отправку сессии в бота */}
               <a
                 href={`https://t.me/${BOT_USERNAME}?start=auth_${authCode}`}
                 target="_blank"
@@ -689,24 +714,19 @@ export default function App() {
             <button
               onClick={() => setScreen('menu')}
               style={{
-                background: '#27272a',
-                border: 'none',
-                color: '#fff',
-                padding: '8px 14px',
-                borderRadius: '10px',
-                fontSize: '13px',
-                fontWeight: '700',
-                cursor: 'pointer'
+                background: '#27272a', border: 'none', color: '#fff', padding: '8px 14px',
+                borderRadius: '10px', fontSize: '13px', fontWeight: '700', cursor: 'pointer'
               }}
             >
               Назад
             </button>
           </div>
 
-          {/* Плашка текущего пользователя с его местом */}
+          {/* Плашка текущего пользователя */}
           {(() => {
-            const myIndex = leaderboard.findIndex((p) => String(p.id) === String(user?.id));
-            const myPlace = myIndex >= 0 ? myIndex + 1 : '—';
+            const currentActiveId = user?.id ? String(user.id) : guestId;
+            const myIndex = leaderboard.findIndex((p) => String(p.id) === currentActiveId);
+            const myPlace = myIndex >= 0 ? myIndex + 1 : 1;
 
             return (
               <div style={{
@@ -722,17 +742,9 @@ export default function App() {
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <div style={{
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    background: '#27272a',
-                    border: '1px solid #3f3f46',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '13px',
-                    fontWeight: '900',
-                    color: '#fbbf24'
+                    width: '32px', height: '32px', borderRadius: '50%', background: '#27272a',
+                    border: '1px solid #3f3f46', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '13px', fontWeight: '900', color: '#fbbf24'
                   }}>
                     #{myPlace}
                   </div>
@@ -754,7 +766,7 @@ export default function App() {
             );
           })()}
 
-          {/* Список всех реальных игроков */}
+          {/* Список реальных игроков */}
           {isLoadingLeaderboard ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#71717a', fontSize: '14px' }}>
               Загрузка топа игроков...
@@ -767,7 +779,8 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {leaderboard.map((player, index) => {
                 const playerRank = getRankBadge(player.mmr);
-                const isMe = String(player.id) === String(user?.id);
+                const currentActiveId = user?.id ? String(user.id) : guestId;
+                const isMe = String(player.id) === currentActiveId;
                 const isTop3 = index < 3;
                 const placeBadge = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
 
@@ -830,7 +843,7 @@ export default function App() {
         </div>
       )}
 
-                {/* 3. ЛОББИ ДУЭЛИ */}
+      {/* 3. ЛОББИ ОЖИДАНИЯ ДУЭЛИ */}
       {screen === 'duel_lobby' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
           <h2 style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>Ожидание друга...</h2>
@@ -952,15 +965,19 @@ export default function App() {
           <div style={{ fontSize: '72px', marginBottom: '8px' }}>
             {duelScores.me > duelScores.opp ? '🏆' : duelScores.me < duelScores.opp ? '💀' : '🤝'}
           </div>
+
           <h1 style={{ fontSize: '32px', fontWeight: '900', margin: '0 0 8px 0' }}>
             {duelScores.me > duelScores.opp ? 'ПОБЕДА!' : duelScores.me < duelScores.opp ? 'ПОРАЖЕНИЕ' : 'НИЧЬЯ'}
           </h1>
+
           <div style={{ fontSize: '20px', fontWeight: '800', color: duelScores.me > duelScores.opp ? '#4ade80' : '#ef4444', marginBottom: '24px' }}>
-            {duelScores.me > duelScores.opp ? '+100 MMR' : duelScores.me < duelScores.opp ? '-100 MMR' : '+0 MMR'}
+            {duelScores.me > duelScores.opp ? '+50 MMR' : duelScores.me < duelScores.opp ? '-40 MMR' : '+0 MMR'}
           </div>
+
           <div style={{ fontSize: '16px', color: '#a1a1aa', marginBottom: '36px' }}>
             Счёт раундов: <b>{duelScores.me} : {duelScores.opp}</b>
           </div>
+
           <button
             onClick={handleGoToMenu}
             style={{
