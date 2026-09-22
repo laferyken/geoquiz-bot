@@ -7,17 +7,47 @@ const BOT_TOKEN = '8677188607:AAHbjb_3eNYty1078oG5dYVH6HkbJEbTjCc';
 const WEB_APP_URL = 'https://geo-quiz-three-zeta.vercel.app/';
 
 const bot = new Telegraf(BOT_TOKEN);
-const DB_FILE = './reminders.json';
+const REMINDERS_FILE = './reminders.json';
+const LEADERBOARD_FILE = './leaderboard.json';
 
 const awaitingTimeInput = new Set();
 
-function loadData() {
-  if (!fs.existsSync(DB_FILE)) return {};
-  try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')); } catch { return {}; }
+// ==========================================
+// ФУНКЦИИ ХРАНИЛИЩА (REMINDERS & LEADERBOARD)
+// ==========================================
+function loadReminders() {
+  if (!fs.existsSync(REMINDERS_FILE)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
 }
 
-function saveData(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+function saveReminders(data) {
+  try {
+    fs.writeFileSync(REMINDERS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('Ошибка сохранения reminders:', e);
+  }
+}
+
+function loadLeaderboard() {
+  if (!fs.existsSync(LEADERBOARD_FILE)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf-8'));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLeaderboard(data) {
+  try {
+    fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('Ошибка сохранения leaderboard:', e);
+  }
 }
 
 function getReminderKeyboard() {
@@ -36,20 +66,24 @@ function getReminderKeyboard() {
   ]);
 }
 
-// ЕДИНЫЙ ОБРАБОТЧИК СТАРТА: ОБЫЧНЫЙ ВХОД + WEB-АВТОРИЗАЦИЯ
+// ==========================================
+// ТЕЛЕГРАМ БОТ: ОБРАБОТЧИКИ
+// ==========================================
+
+// Единый обработчик команды /start
 bot.start(async (ctx) => {
   const userId = ctx.from.id.toString();
   const payload = ctx.payload; // Параметр из ссылки ?start=
-  const data = loadData();
+  const data = loadReminders();
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Novokuznetsk' });
 
-  // Обновляем дату визита
+  // Обновляем визит для напоминаний
   data[userId] = {
     ...data[userId],
     userName: ctx.from.first_name || 'Географ',
     lastPlayedDate: today
   };
-  saveData(data);
+  saveReminders(data);
 
   // Получаем аватарку пользователя
   let photoUrl = null;
@@ -69,7 +103,7 @@ bot.start(async (ctx) => {
     photo_url: photoUrl
   };
 
-  // Авторизация из браузера
+  // Авторизация пользователя из обычного браузера
   if (payload && payload.startsWith('auth_')) {
     const authCode = payload.replace('auth_', '');
 
@@ -91,11 +125,11 @@ bot.start(async (ctx) => {
         }
       );
     } catch (e) {
-      console.error('Ошибка auth API:', e);
+      console.error('Ошибка отправки авторизации:', e);
     }
   }
 
-  // Стандартное приветствие
+  // Обычное приветствие
   ctx.reply(
     `👋 Привет, <b>${ctx.from.first_name || 'Географ'}</b>!\n\n` +
     `Добро пожаловать в <b>GeoQuiz</b>!\n` +
@@ -114,9 +148,9 @@ bot.command(['remind', 'time', 'settime'], (ctx) => {
 bot.action(/^time_(\d{2}:\d{2})$/, async (ctx) => {
   const selectedTime = ctx.match[1];
   const userId = ctx.from.id.toString();
-  const data = loadData();
+  const data = loadReminders();
   data[userId] = { ...data[userId], time: selectedTime, userName: ctx.from.first_name || 'Географ' };
-  saveData(data);
+  saveReminders(data);
   awaitingTimeInput.delete(userId);
 
   await ctx.answerCbQuery(`Время сохранено: ${selectedTime}`);
@@ -134,9 +168,9 @@ bot.action(/^time_(\d{2}:\d{2})$/, async (ctx) => {
 
 bot.action('time_off', async (ctx) => {
   const userId = ctx.from.id.toString();
-  const data = loadData();
+  const data = loadReminders();
   if (data[userId]) delete data[userId].time;
-  saveData(data);
+  saveReminders(data);
   awaitingTimeInput.delete(userId);
   await ctx.answerCbQuery('Напоминания выключены');
   await ctx.editMessageText('🔕 Ежедневные напоминания отключены.', {
@@ -165,9 +199,9 @@ bot.on('text', (ctx, next) => {
     return ctx.reply('⚠️ Формат: <b>ЧЧ:ММ</b> (например <code>19:30</code>):', { parse_mode: 'HTML' });
   }
 
-  const data = loadData();
+  const data = loadReminders();
   data[userId] = { ...data[userId], time: text, userName: ctx.from.first_name || 'Географ' };
-  saveData(data);
+  saveReminders(data);
   awaitingTimeInput.delete(userId);
   ctx.reply(`✅ Сохранено на <b>${text}</b> каждый день.`, {
     parse_mode: 'HTML',
@@ -175,11 +209,11 @@ bot.on('text', (ctx, next) => {
   });
 });
 
-// Крон напоминания
+// Крон ежеминутной проверки напоминаний
 cron.schedule('* * * * *', () => {
   const now = new Date();
   const timeString = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Novokuznetsk' });
-  const data = loadData();
+  const data = loadReminders();
   for (const [userId, record] of Object.entries(data)) {
     if (record.time === timeString) {
       bot.telegram.sendMessage(userId, `🔔 <b>Время размять память!</b>\n\nЗайди в GeoQuiz и подтверди стрик!`, {
@@ -192,7 +226,7 @@ cron.schedule('* * * * *', () => {
 
 // Стрик-таймер (23:00)
 cron.schedule('0 23 * * *', () => {
-  const data = loadData();
+  const data = loadReminders();
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Novokuznetsk' });
   for (const [userId, record] of Object.entries(data)) {
     if (record.lastPlayedDate !== today) {
@@ -204,23 +238,84 @@ cron.schedule('0 23 * * *', () => {
   }
 }, { timezone: 'Asia/Novokuznetsk' });
 
-bot.launch({
-  dropPendingUpdates: true
-})
-  .then(() => {
-    console.log('🤖 Бот успешно запущен и слушает Telegram!');
-  })
-  .catch((err) => {
-    console.error('❌ Ошибка запуска бота в Telegram:', err);
-  });
-// Фиктивный веб-сервер для прохождения проверки портов Render
+// ==========================================
+// HTTP-СЕРВЕР: ДЛЯ RENDER И ЛИДЕРБОРДА
+// ==========================================
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    return res.end();
+  }
+
+  // 1. Получение списка лидеров (GET /api/leaderboard)
+  if (req.method === 'GET' && (req.url === '/api/leaderboard' || req.url === '/leaderboard')) {
+    const users = loadLeaderboard();
+    const sorted = users.sort((a, b) => (Number(b.mmr) || 0) - (Number(a.mmr) || 0));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, leaderboard: sorted }));
+  }
+
+  // 2. Сохранение реального игрока (POST /api/leaderboard)
+  if (req.method === 'POST' && (req.url === '/api/leaderboard' || req.url === '/leaderboard')) {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body);
+        if (!data.id) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Missing ID' }));
+        }
+
+        let users = loadLeaderboard();
+        const existingIndex = users.findIndex((u) => String(u.id) === String(data.id));
+
+        const userProfile = {
+          id: String(data.id),
+          name: data.first_name || data.name || 'Географ',
+          username: data.username || '',
+          photo: data.photo_url || data.photo || null,
+          mmr: Number(data.mmr) || 1000,
+          streak: Number(data.streak) || 0,
+          updatedAt: Date.now()
+        };
+
+        if (existingIndex >= 0) {
+          users[existingIndex] = { ...users[existingIndex], ...userProfile };
+        } else {
+          users.push(userProfile);
+        }
+
+        saveLeaderboard(users);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ success: true, user: userProfile }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Пинг активности для проверок Render
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot is running!');
-}).listen(PORT, () => {
-  console.log(`🌐 Сервер проверки активности слушает порт: ${PORT}`);
+  res.end('Bot and Leaderboard API is running 24/7!');
 });
+
+server.listen(PORT, () => {
+  console.log(`🌐 Сервер бота и лидерборда слушает порт: ${PORT}`);
+});
+
+// Запуск бота с автоматическим сбросом зависших обновлений
+bot.launch({ dropPendingUpdates: true })
+  .then(() => console.log('🤖 Бот успешно запущен и слушает Telegram!'))
+  .catch((err) => console.error('❌ Ошибка запуска бота:', err));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
