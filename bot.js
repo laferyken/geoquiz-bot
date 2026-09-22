@@ -204,7 +204,15 @@ cron.schedule('0 23 * * *', () => {
   }
 }, { timezone: 'Asia/Novokuznetsk' });
 
-bot.launch().then(() => console.log('🤖 Бот успешно запущен!'));
+bot.launch({
+  dropPendingUpdates: true
+})
+  .then(() => {
+    console.log('🤖 Бот успешно запущен и слушает Telegram!');
+  })
+  .catch((err) => {
+    console.error('❌ Ошибка запуска бота в Telegram:', err);
+  });
 // Фиктивный веб-сервер для прохождения проверки портов Render
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
