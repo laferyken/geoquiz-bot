@@ -679,7 +679,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 2. ЛИДЕРБОРД */}
+      {/* 2. ЛИДЕРБОРД РЕАЛЬНЫХ ИГРОКОВ */}
       {screen === 'leaderboard' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '16px', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -689,35 +689,72 @@ export default function App() {
             <button
               onClick={() => setScreen('menu')}
               style={{
-                background: '#27272a', border: 'none', color: '#fff', padding: '8px 14px',
-                borderRadius: '10px', fontSize: '13px', fontWeight: '700', cursor: 'pointer'
+                background: '#27272a',
+                border: 'none',
+                color: '#fff',
+                padding: '8px 14px',
+                borderRadius: '10px',
+                fontSize: '13px',
+                fontWeight: '700',
+                cursor: 'pointer'
               }}
             >
               Назад
             </button>
           </div>
 
-          {/* Плашка текущего пользователя */}
-          <div style={{
-            background: 'linear-gradient(90deg, #18181b, #27272a)', border: `2px solid ${rank.color}`,
-            borderRadius: '16px', padding: '12px 16px', display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between', marginBottom: '16px', boxShadow: `0 4px 20px ${rank.color}25`
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '24px' }}>{rank.icon}</span>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: '14px', fontWeight: '800', color: '#fff' }}>{displayName} (Вы)</span>
-                <span style={{ fontSize: '11px', fontWeight: '700', color: rank.color, textTransform: 'uppercase' }}>
-                  {rank.title}
-                </span>
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-              <span style={{ fontSize: '16px', fontWeight: '900', color: '#f4f4f5' }}>{mmr} MMR</span>
-              <span style={{ fontSize: '11px', color: '#fb923c', fontWeight: '700' }}>🔥 {streak} дн.</span>
-            </div>
-          </div>
+          {/* Плашка текущего пользователя с его местом */}
+          {(() => {
+            const myIndex = leaderboard.findIndex((p) => String(p.id) === String(user?.id));
+            const myPlace = myIndex >= 0 ? myIndex + 1 : '—';
 
+            return (
+              <div style={{
+                background: 'linear-gradient(90deg, #18181b, #27272a)',
+                border: `2px solid ${rank.color}`,
+                borderRadius: '16px',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: '16px',
+                boxShadow: `0 4px 20px ${rank.color}25`
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: '#27272a',
+                    border: '1px solid #3f3f46',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '13px',
+                    fontWeight: '900',
+                    color: '#fbbf24'
+                  }}>
+                    #{myPlace}
+                  </div>
+                  <span>{rank.icon}</span>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontSize: '14px', fontWeight: '800', color: '#fff' }}>
+                      {displayName} <span style={{ color: '#4ade80', fontSize: '11px' }}>(Вы)</span>
+                    </span>
+                    <span style={{ fontSize: '11px', fontWeight: '700', color: rank.color, textTransform: 'uppercase' }}>
+                      {rank.title}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                  <span style={{ fontSize: '16px', fontWeight: '900', color: '#f4f4f5' }}>{mmr} MMR</span>
+                  <span style={{ fontSize: '11px', color: '#fb923c', fontWeight: '700' }}>🔥 {streak} дн.</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Список всех реальных игроков */}
           {isLoadingLeaderboard ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#71717a', fontSize: '14px' }}>
               Загрузка топа игроков...
@@ -730,6 +767,7 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {leaderboard.map((player, index) => {
                 const playerRank = getRankBadge(player.mmr);
+                const isMe = String(player.id) === String(user?.id);
                 const isTop3 = index < 3;
                 const placeBadge = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`;
 
@@ -737,18 +775,36 @@ export default function App() {
                   <div
                     key={player.id || index}
                     style={{
-                      background: '#121215', border: isTop3 ? '1px solid #3f3f46' : '1px solid #27272a',
-                      borderRadius: '14px', padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+                      background: isMe ? 'rgba(59, 130, 246, 0.12)' : '#121215',
+                      border: isMe ? '1.5px solid #3b82f6' : isTop3 ? '1px solid #3f3f46' : '1px solid #27272a',
+                      borderRadius: '14px',
+                      padding: '10px 14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      boxShadow: isMe ? '0 0 15px rgba(59, 130, 246, 0.2)' : 'none'
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <span style={{ fontSize: isTop3 ? '18px' : '13px', fontWeight: '800', width: '28px', color: '#a1a1aa' }}>
+                      <span style={{
+                        fontSize: isTop3 ? '18px' : '13px',
+                        fontWeight: '800',
+                        width: '28px',
+                        color: index === 0 ? '#facc15' : index === 1 ? '#cbd5e1' : index === 2 ? '#fb923c' : '#a1a1aa',
+                        textAlign: 'center'
+                      }}>
                         {placeBadge}
                       </span>
-                      <span>{playerRank.icon}</span>
+
+                      {player.photo ? (
+                        <img src={player.photo} alt="" style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
+                      ) : (
+                        <span style={{ fontSize: '18px' }}>{playerRank.icon}</span>
+                      )}
+
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontSize: '13px', fontWeight: '700', color: '#ffffff' }}>
-                          {player.name}
+                        <span style={{ fontSize: '13px', fontWeight: '700', color: isMe ? '#60a5fa' : '#ffffff' }}>
+                          {player.name} {isMe && '• Вы'}
                         </span>
                         <span style={{ fontSize: '10px', color: playerRank.color, fontWeight: '700', textTransform: 'uppercase' }}>
                           {playerRank.title}
@@ -757,9 +813,13 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                      <span style={{ fontSize: '14px', fontWeight: '800', color: '#f4f4f5' }}>{player.mmr}</span>
+                      <span style={{ fontSize: '14px', fontWeight: '800', color: '#f4f4f5' }}>
+                        {player.mmr} MMR
+                      </span>
                       {player.streak > 0 && (
-                        <span style={{ fontSize: '10px', color: '#f97316', fontWeight: '700' }}>🔥 {player.streak}</span>
+                        <span style={{ fontSize: '10px', color: '#f97316', fontWeight: '700' }}>
+                          🔥 {player.streak}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -770,7 +830,7 @@ export default function App() {
         </div>
       )}
 
-      {/* 3. ЛОББИ ДУЭЛИ */}
+                {/* 3. ЛОББИ ДУЭЛИ */}
       {screen === 'duel_lobby' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', textAlign: 'center' }}>
           <h2 style={{ fontSize: '24px', fontWeight: '800', marginBottom: '8px' }}>Ожидание друга...</h2>
